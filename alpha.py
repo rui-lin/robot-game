@@ -88,7 +88,16 @@ class Robot:
 
                 return ['attack', targets[0].location]
 
-            return ['guard'] # prob won't happen
+            # 2 block away targets
+            targets = self.enemy_robots(game)
+            targets = [x for x in targets if rg.wdist(self.location, x.location) == 1]
+            targets.sort(lambda x,y: cmp(x.hp,y.hp))
+            for x in targets:
+               predicted_loc = rg.toward(x.location,rg.CENTER_POINT) 
+               if rg.wdist(self.location, predicted_loc) == 1: # can hit it
+                  return ['attack', predicted_loc]
+
+            return ['guard']
 
             # predict suicide and dodge. remember for next time.
 
