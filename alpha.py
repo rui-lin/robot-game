@@ -18,7 +18,7 @@ class Robot:
         if self.robot_id not in self.allstate:
                 self.set_state(self.GATHER)
         return self.allstate[self.robot_id]
-    
+
     def enemy_robots(self, game):
         return [x for x in game.robots.values() if x.player_id != self.player_id]
 
@@ -27,7 +27,7 @@ class Robot:
 
     def is_empty_loc(self, game, loc):
         return loc not in game.robots and 'obstacle' not in rg.loc_types(loc)
-    
+
     def confident_dmg(self):
         (low,high) = rg.settings.attack_range
         return math.ceil(low + (high-low)*0.9) # range 8-10, so prob returns 10.
@@ -47,6 +47,24 @@ class Robot:
     def is_near(self, loc, dist):
         return rg.wdist(self.location, loc) <= dist
 
+    # Returns list of possible next dirs to reach dest location
+    def towards(self, dest):
+        (x,y) = self.location
+        locs = []
+        if dest[0] < x:
+          locs += [(x-1,y)]
+        if dest[0] > x:
+          locs += [(x+1,y)]
+        if dest[1] < y:
+          locs += [(x, y-1)]
+        if dest[1] > y:
+          locs += [(x, y+1)]
+        # short hack to control which dir to try first
+        if abs(dest[0] - x) < abs(dest[1] - y):
+          return reversed(locs)
+        else:
+          return locs
+
     def act(self, game):
         # Switches
         if self.state() == self.GATHER:
@@ -63,10 +81,11 @@ class Robot:
         # not sure why bump collisions aren't always detected
         # fix two same robots trying to move to center
         if self.state() == self.GATHER:
-            next_loc = rg.toward(self.location, rg.CENTER_POINT)
-            if self.is_empty_loc(game, next_loc):  # try move to other dir
-                if self.is_safe_from_attacks(game, next_loc):
-                        return ['move', next_loc]
+            next_locs = self.towards(rg.CENTER_POINT)
+            for loc in next_locs:
+                if self.is_empty_loc(game, loc):
+                    if self.is_safe_from_attacks(game, loc):
+                        return ['move', loc]
 
             self.set_state(self.ATTACK) # crucial, was why kept trying to walk
 
@@ -81,9 +100,9 @@ class Robot:
 
             if len(targets) > 0: # shouldn't happen with current switches. may change later.
                 if len(targets) == 1 and self.hp <= rg.settings.attack_range[1] and targets[0].hp > rg.settings.attack_range[0]:
-                    return ['suicide']   
+                    return ['suicide']
                 # rough, so hard for opponent to guess. need to count diag robots too
-                if len(targets) > 1 and self.hp < len(targets)*(self.SUICIDE_DMG*0.9): 
+                if len(targets) > 1 and self.hp < len(targets)*(self.SUICIDE_DMG*0.9):
                     return ['suicide']
 
                 return ['attack', targets[0].location]
@@ -93,7 +112,7 @@ class Robot:
             targets = [x for x in targets if rg.wdist(self.location, x.location) == 1]
             targets.sort(lambda x,y: cmp(x.hp,y.hp))
             for x in targets:
-               predicted_loc = rg.toward(x.location,rg.CENTER_POINT) 
+               predicted_loc = rg.toward(x.location,rg.CENTER_POINT)
                if rg.wdist(self.location, predicted_loc) == 1: # can hit it
                   return ['attack', predicted_loc]
 
