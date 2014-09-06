@@ -64,7 +64,7 @@ class Robot:
 
         # short hack to control which dir to try first
         if abs(dest[0] - x) < abs(dest[1] - y):
-            return reversed(locs)
+            return list(reversed(locs))
         else:
             return locs
 
@@ -116,7 +116,7 @@ class Robot:
         # 2 block away targets
         targets = self.enemy_robots(game)
         targets = [x for x in targets if
-                   rg.wdist(self.location, x.location) == 1]
+                   rg.wdist(self.location, x.location) == 2]
         targets.sort(lambda x, y: cmp(x.hp, y.hp))
         for x in targets:
             # Can hit predicted loc 1? (towards center)
@@ -126,6 +126,7 @@ class Robot:
 
             # Try predicted loc 2 (towards robot)
             predicted_loc = self.towards(x.location)[0]
+            print "me", self.location, "loc", predicted_loc, "enemy", x.location
             return ['attack', predicted_loc]
 
         return ['guard']
