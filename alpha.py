@@ -124,6 +124,10 @@ class Robot:
             if rg.wdist(self.location, predicted_loc) == 1:
                 return ['attack', predicted_loc]
 
+            # Try predicted loc 2 (towards robot)
+            predicted_loc = self.towards(x.location)[0]
+            return ['attack', predicted_loc]
+
         return ['guard']
 
     def act(self, game):
