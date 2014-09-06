@@ -11,6 +11,7 @@ Major Improvements
 - Change attack behaviour (suicide only if robot may die next turn and target(s) cannot be killed by one attack)
 - Fix "is-in-danger" and "is-safe-from-attacks" logic, so robots avoid getting hit better [~1100 elo, 09/02/2014]
 - Enhance attack/defend behaviour (can attack predicted spots, 2 blocks away) [~1500 elo, 09/04/2014]
+- Allow two move directions towards target, whichever safer [~1600 elo, 09/05/2014]
 
 -----------
 Built for the AI robotics competition at https://robotgame.net
