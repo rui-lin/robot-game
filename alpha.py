@@ -290,6 +290,7 @@ class Robot:
         return (loc not in game.robots
                 and 'obstacle' not in rg.loc_types(loc)
                 and 'invalid' not in rg.loc_types(loc)
+                and ('spawn' not in rg.loc_types(loc) or game.turn % 10 != 1)
                 and not self.intel.will_have_player(loc))
 
     def confident_dmg(self):
@@ -337,16 +338,27 @@ class Robot:
         return [x for x in filter_nearby(self.intel.enemies(), self.location, 1)
                 if self.intel.will_explode(x)]
 
+    # First hp below which expected value of attack < value of explode
+    # (1,9,14)(2,19,29)(3,28,37)(4,37,57)
+    def should_explode_over_attack(self):
+        targets = self.intel.enemies()
+        targets = [x for x in targets if
+                   rg.wdist(self.location, x.location) == 1]
+        return ((len(targets) == 1 and self.hp <= 9 and targets[0].hp > 8) or
+                (len(targets) == 2 and self.hp <= 19) or
+                (len(targets) == 3 and self.hp <= 28) or
+                (len(targets) == 4 and self.hp <= 37))
+
     def process_switches(self, game):
         if self.state() == self.GATHER:
             if self.is_in_danger(game):
                 self.set_state(self.ATTACK)
             elif self.is_near(rg.CENTER_POINT, 3):  # bad switch, change
                 self.set_state(self.DEFEND)
-        elif self.state() == self.ATTACK:
+        if self.state() == self.ATTACK:
             if not self.is_in_danger(game):
                 self.set_state(self.GATHER)
-        elif self.state() == self.DEFEND:
+        if self.state() == self.DEFEND:
             pass  # TODO
 
     def process_gather_state(self, game):
@@ -358,40 +370,43 @@ class Robot:
 
         self.set_state(self.ATTACK)  # crucial, was why kept trying to walk
 
-    def process_attack_state(self, game):
-        # TODO: team up attacks
+    def try_parry(self, game):
+        safe_locs = [x for x in rg.locs_around(self.location) if
+                     (self.is_empty_loc(game, x) and
+                      self.is_safe_from_attacks(game, x))]
+        if len(safe_locs) > 0:
+            return ['move', random.choice(safe_locs)]
+        else:
+            return False
 
-        # parry if needed
+    def process_attack_state(self, game):
+        # Parry from predicted explosion
         dangers = {x.location: x for x in self.neighbours_exploding()}
         if len(dangers) > 0:
-            safe_locs = [x for x in rg.locs_around(self.location) if
-                         (x not in dangers and self.is_empty_loc(game, x) and
-                         self.is_safe_from_attacks(game, x))]
-            if len(safe_locs) > 0:
-                return ['move', random.choice(safe_locs)]
-            else:
-                return ['guard']
+            res = self.try_parry(game)
+            return res if res else ['guard']
 
-        # normal attack
+        # Else, combat-mode
         targets = self.intel.enemies()
         targets = [x for x in targets if
                    rg.wdist(self.location, x.location) == 1]
         targets.sort(lambda x, y: cmp(x.hp, y.hp))
-        # for later, if want to coordinate attacks from afar
-        # targets.sort(lambda x, y: cmp(rg.wdist(self.location,x.location),
-        # rg.wdist(self.location,y.location)))
 
+        # 1 block away targets (in combat)
         if len(targets) > 0:
-            if (len(targets) == 1 and self.hp <= rg.settings.attack_range[1] and
-                    targets[0].hp > rg.settings.attack_range[0]):
-                return ['suicide']
+            # try parry if may die
+            if self.hp <= len(targets)*10:
+                res = self.try_parry(game)
+                if res:
+                    return res
 
-            # rough, hard for opponent to guess. need to count diag robots too
-            if (len(targets) > 1 and
-                    self.hp < len(targets)*(rg.settings.suicide_damage*0.9)):
+            # explode or attack decision
+            if self.should_explode_over_attack():
                 return ['suicide']
+            else:
+                return ['attack', targets[0].location]
 
-            return ['attack', targets[0].location]
+        # TODO: team up attacks
 
         # 2 block away targets
         targets = self.intel.enemies()
@@ -407,6 +422,10 @@ class Robot:
             # Try predicted loc 2 (towards robot)
             predicted_loc = self.towards(x.location)[0]
             return ['attack', predicted_loc]
+
+        # for later, if want to coordinate attacks from afar
+        # targets.sort(lambda x, y: cmp(rg.wdist(self.location,x.location),
+        # rg.wdist(self.location,y.location)))
 
         return ['guard']
 
