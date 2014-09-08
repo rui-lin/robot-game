@@ -26,7 +26,7 @@ class IntelUnit:
 
     def __init__(self):
         self.turns = {}
-        self.enemy_explode_hp_given_nrobots = [0] * 5
+        self.enemy_explode_hp_given_nrobots = [0] + [8]*4
         self.player_id = None
 
         # Per turn variables
