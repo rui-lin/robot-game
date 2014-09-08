@@ -5,112 +5,200 @@ from collections import namedtuple, defaultdict
 
 TurnState = namedtuple("TurnState", "players enemies attack_locs move_locs " +
                                     "explode_locs guard_locs")
-EnemyInfo = namedtuple("EnemyInfo", "will_explode")
+class ReconstructedInfo:
+    def __init__(self):
+        self.actions = []
+
+class PredictedInfo:
+    def __init__(self):
+        self.will_explode = False
 
 
 # Assumes max 4 units 'beside' a robot (north south east west)
 class IntelUnit:
+    # reconstructed_actions list
+    default = 0
+    died_by_player = 1
+    died_by_spawn = 2
+    exploded = 3
+    moved = 4
+    guarded = 5
+
     def __init__(self):
-        self.game_turns = {}
+        self.turns = {}
         self.enemy_explode_hp_given_nrobots = [0] * 5
         self.player_id = None
 
         # Per turn variables
         self.current_turn = -1
-        self.enemy_info = defaultdict(EnemyInfo)
+        self.reconstructed_info = {}
+        self.predicted_info = defaultdict(PredictedInfo)
+
+    def _high_player_damage_at_loc(self, loc, turn):
+        return (self.turns[turn].attack_locs[loc]*10 +
+                sum (15 for l in rg.locs_around(loc)
+                     if l in self.turns[turn].explode_locs))
+
+    def _low_player_damage_at_loc(self, loc, turn):
+        return (self.turns[turn].attack_locs[loc]*8 +
+                sum (15 for l in rg.locs_around(loc)
+                     if l in self.turns[turn].explode_locs))
+
+    def _add_reconstructed_action(self, enemy, action):
+        if enemy.location not in self.reconstructed_info:
+            self.reconstructed_info[enemy.location] = ReconstructedInfo()
+        #print "Adding action {0} to {1}, now has {2}".format(
+        #    action, enemy.location, self.reconstructed_info[enemy.location].actions)
+        self.reconstructed_info[enemy.location].actions += [action]
+
+    # analyze move of enemy in prev turn
+    # possibilities are
+    # attack, guard, move, explode
+    # Tested, cannot move into a location of exploding/dying robot
+    # So find locations where enemy robots disappeared.
+    def _analyze_enemy_move(self, enemy):
+        if enemy.location in self.reconstructed_info:  # already analyzed
+            return
+        self._add_reconstructed_action(enemy, self.default)
+
+        turn = self.current_turn
+        enemyl = enemy.location
+        old_enemiesl = {x.location: x for x in self.enemies(turn-1)}
+        new_enemiesl = {x.location: x for x in self.enemies(turn)}
+        if enemyl not in old_enemiesl:
+            print "WARNING: this method is only for enemies of previous turn"
+            return
+
+        # move, died by player, died by spawn, exploded
+        if enemyl not in new_enemiesl:
+            # Find places enemy could have moved to (and is now dead or alive)
+            # Leniency towards moving, since its less risky.
+            moved_locs = rg.locs_around(enemyl)
+            moved_locs = [loc for loc in moved_locs if
+                ((loc in new_enemiesl and new_enemiesl[loc].hp <= enemy.hp -
+                  self._low_player_damage_at_loc(loc, turn-1)) or
+                 (loc not in new_enemiesl and
+                  enemy.hp <= self._high_player_damage_at_loc(loc, turn-1)))]
+            # Check moved to a place without an enemy there.
+            # Lenient.
+            # Not 100% sure since another enemy could have moved here as well
+            if any(loc for loc in moved_locs if
+                   loc not in old_enemiesl):
+                self._add_reconstructed_action(enemy, self.moved)
+                if loc not in new_enemiesl:
+                    self._add_reconstructed_action(enemy, self.died_by_player)
+                return
+            # Check moved to a place with an enemy originally there.
+            # Lenient.
+            # Doesn't check to disallow two robots swapping places
+            elif len(moved_locs) > 0:
+                for loc in moved_locs:
+                    self._analyze_enemy_move(old_enemiesl[loc])
+                    if self.moved in self.reconstructed_info[loc].actions:
+                        self._add_reconstructed_action(enemy, self.moved)
+                        if loc not in new_enemiesl:
+                            self._add_reconstructed_action(enemy,
+                                                       self.died_by_player)
+                        return
+            # Else, for sure they did not move for sure.
+            # Check x could have been killed. Lenient
+            if enemy.hp <= self._high_player_damage_at_loc(enemyl, turn-1):
+                self._add_reconstructed_action(enemy, self.died_by_player)
+                return
+            # Check x could have been killed by spawn reset. Lenient
+            if ('spawn' in rg.loc_types(enemyl) and
+                    turn % rg.settings.spawn_every == 1):
+                self._add_reconstructed_action(enemy, self.died_by_spawn)
+                return
+            # Exhaused all lenient possibilities
+            # Must have exploded then.
+            self._add_reconstructed_action(enemy, self.exploded)
+        # An enemy still in that location
+        else:
+            # Either this enemy moved, and another enemy moved here.
+            self._add_reconstructed_action(enemy, self.moved)
+            # Or this enemy guarded.
+            # Can be more strict. check dmg/hp
+            self._add_reconstructed_action(enemy, self.guarded)
+
+    def _analyze_enemy_moves(self):
+        for x in self.enemies(self.current_turn - 1):
+            self._analyze_enemy_move(x)
 
     def _analyze_explosions(self):
-        # Method 1.
-        # Tested, cannot move into a location of exploding robot
-        # So find locations where enemy robots disappeared.
-        # Now they've either moved, got hit by me, or exploded
-        # Check possible move locations to see if candidate robot is there
-        # Check if I could've destroyed it already.
-        # TODO: check if there was orginally a robot there, if it moved
-        # somewhere. bit complicated recursion, can't backtrace 1 but more
-        # is ok.
         turn = self.current_turn
-        enemies_by_loc = {x.location: x for x in self.enemies(turn)}
-        players_by_id = {x.robot_id: x for x in self.players(turn)}
-        candidates = [x for x in self.enemies(turn-1) if
-                      x.location not in enemies_by_loc]
-        for x in candidates:
-            # any players nearby that got damaged exactly 7 or 15?
-            # (and this enemy was only possibility responsible). exploded
-            nearby_players = filter_nearby(self.players(turn-1), x.location)
-            for y in nearby_players:
-                # player explosion caused the damage
-                if y.location in self.game_turns[turn-1].explode_locs:
-                    continue
-                nearby_enemies = filter_nearby(self.enemies(turn-1), y.location,
-                                               1)
-                nearby_enemies_after = filter_nearby(self.enemies(turn),
-                                                     y.location, 1)
-                # exactly one enemy exploded around this player
-                if len(nearby_enemies) - len(nearby_enemies_after) != 1:
-                    continue
+        old_enemiesl = {x.location: x for x in self.enemies(turn-1)}
 
-                max_norm_dmg = 10*len(nearby_enemies)
-                new_hp = (players_by_id[y.robot_id].hp if
-                          y.robot_id in players_by_id else 0)
-                hp_diff = y.hp - new_hp
-                guarded = y.location in self.game_turns[turn].guard_locs
-                if ((hp_diff == 7 and guarded) or hp_diff > max_norm_dmg):
-                    print "exact dmg discovery"
-                    self._record_explosion_point(x)
-                    break
+        # Players to examine are non-exploding ones.
+        old_players = [y for y in self.players(turn-1) if
+                   y.location not in self.turns[turn-1].explode_locs]
+        new_players_id = {y.robot_id: y for y in self.players(turn)}
 
-            # x could have moved and is alive
-            moved_locs = filter_nearby(self.enemies(turn), x.location,
-                                       1)
-            moved_locs = [x for x in moved_locs if
-                          (x.location in enemies_by_loc and
-                           enemies_by_loc[x.location].hp <= x.hp)]
-            if len(moved_locs) > 0:
+        # Find players hit with abnormal damage, or 7 w/ guarding
+        for y in old_players:
+            num_nearby_enemies = sum (1 for loc in rg.locs_around(y.location)
+                                      if loc in old_enemiesl)
+            max_norm_dmg = 10*num_nearby_enemies
+            new_hp = (new_players_id[y.robot_id].hp if
+                        y.robot_id in new_players_id else 0)
+            hp_diff = y.hp - new_hp
+            guarded = y.location in self.turns[turn-1].guard_locs
+            if ((hp_diff == 7 and guarded) or hp_diff > max_norm_dmg):
+                print "{0} hit with {1} damage.".format(y, hp_diff)
+                # find culprit(s)
+                candidates = [old_enemiesl[loc] for loc in
+                              rg.locs_around(y.location)
+                              if loc in old_enemiesl]
+                if len(candidates) == 1:
+                    self._record_explosion_point(candidates[0])
+                elif len(candidates) > 1:
+                    for e in candidates:
+                        l = e.location
+                        if self.exploded in self.reconstructed_info[l].actions:
+                            self._record_explosion_point(old_enemiesl[l])
+
+    def _verify_explosion_predictions(self):
+        t = self.current_turn
+        old_enemiesl = {x.location: x for x in self.enemies(t-1)}
+        for (loc, info) in self.predicted_info.iteritems():
+            if not info.will_explode:  # check explosion predictions
                 continue
 
-            # x could have moved and got killed at new loc
-            for loc in rg.locs_around(x.location):
-                if x.hp <= (self.game_turns[turn-1].attack_locs[loc]*10 +
-                            self.game_turns[turn-1].explode_locs[loc]*15):
-                    continue
-
-            # x could have been killed, so skip
-            # (or it could have moved)
-            if x.hp <= (self.game_turns[turn-1].attack_locs[x.location]*10 +
-                        self.game_turns[turn-1].explode_locs[x.location]*15):
-                continue
-
-            # x could have been killed by spawn reset
-            if ('spawn' in rg.loc_types(x.location) and
-                    turn % rg.settings.spawn_every == 1):
-                continue
-
-            # possibilities exhausted, x must have exploded
-            self._record_explosion_point(x)
+            neighbours = len(filter_nearby(self.players(t-1), loc, 1))
+            if self.exploded in self.reconstructed_info[loc].actions:
+                print "Anticipated explosion at ", loc, " correctly! ({0}<={1}hp, {2} neighbour(s))".format(
+                    old_enemiesl[loc].hp,
+                    self.enemy_explode_hp_given_nrobots[neighbours],
+                    neighbours)
+            else: # False positive prediction
+                print "False positive explosion prediction at ", loc, "({0}<={1}hp, {2} neighbour(s))".format(
+                    old_enemiesl[loc].hp,
+                    self.enemy_explode_hp_given_nrobots[neighbours],
+                    neighbours)
+                for i in range(neighbours, 5):
+                    self.enemy_explode_hp_given_nrobots[i] -= max(
+                        2, self.enemy_explode_hp_given_nrobots[i]*0.2)
+                print "Lowering expectation to", self.enemy_explode_hp_given_nrobots[neighbours]
 
     def _record_explosion_point(self, enemy):
         # x exploded. record exploding hp given num neighbours
         turn = self.current_turn
         nplayers = sum(1 for _ in
                        filter_nearby(self.players(turn), enemy.location, 1))
-        self.enemy_explode_hp_given_nrobots[nplayers] = max(
-            self.enemy_explode_hp_given_nrobots[nplayers], enemy.hp)
-        print("guessed an explosion point (", nplayers, "neighbours) = ",
-              self.enemy_explode_hp_given_nrobots[nplayers])
-
-    def _analyze_enemies(self):
-        # predict when they explode.
-        turn = self.current_turn
-        if turn > 1:
-            self._analyze_explosions()
+        for i in range(nplayers, 5):
+            self.enemy_explode_hp_given_nrobots[i] = max(
+                self.enemy_explode_hp_given_nrobots[i], enemy.hp)
+        print "guessed an explosion point ({0}+ neighbours) = {1}".format(
+            nplayers, self.enemy_explode_hp_given_nrobots[nplayers])
 
     def _mark_enemies(self):
         # mark enemies predicted to explode
         for x in self.enemies():
-            self.enemy_info[x.location] = EnemyInfo(
-                will_explode=self._will_explode(x))
+            self.predicted_info[x.location].will_explode=self._will_explode(x)
 
+        predicts = [x.location for x in self.enemies() if self.predicted_info[x.location].will_explode]
+        if len(predicts) > 0:
+            print "explosion predictions", predicts
     def _will_explode(self, enemy):
         nnearby = sum(1 for _ in filter_nearby(self.players(),
                                                enemy.location, 1))
@@ -122,55 +210,63 @@ class IntelUnit:
             self.player_id = next(x.player_id for x in game.robots.values()
                                   if 'robot_id' in x)
 
-        if game.turn not in self.game_turns:
-            print "inspecting turn", game.turn
+        if game.turn not in self.turns:
+            # print "inspecting turn", game.turn
             # Reset per turn variables
             self.current_turn = game.turn
-            self.enemy_info = defaultdict(EnemyInfo)
+            self.reconstructed_info = {}
 
             players = [x for x in game.robots.values() if
                        x.player_id == self.player_id]
             enemies = [x for x in game.robots.values() if
                        x.player_id != self.player_id]
-            self.game_turns[game.turn] = TurnState(players=players,
+            self.turns[game.turn] = TurnState(players=players,
                                                    enemies=enemies,
                                                    attack_locs=defaultdict(int),
                                                    move_locs=defaultdict(int),
                                                    explode_locs=defaultdict(int),
                                                    guard_locs=defaultdict(int)
                                                    )
-            self._analyze_enemies()
-            self._mark_enemies()
+            if game.turn > 1:
+                # Analyze enemy's last moves
+                self._analyze_enemy_moves()
+                self._analyze_explosions()
+
+                # Verify if our predictions were correct
+                self._verify_explosion_predictions()
+
+                # Make new predictions
+                self.predicted_info = defaultdict(PredictedInfo)
+                self._mark_enemies()
 
     def enemies(self, turn=None):
         if turn is None:
             turn = self.current_turn
-        return self.game_turns[turn].enemies
+        return self.turns[turn].enemies
 
     def players(self, turn=None):
         if turn is None:
             turn = self.current_turn
-        return self.game_turns[turn].players
+        return self.turns[turn].players
 
     def will_explode(self, enemy):
-        return self.enemy_info[enemy.location].will_explode
+        return self.predicted_info[enemy.location].will_explode
 
     def record_attack(self, loc):
-        self.game_turns[self.current_turn].attack_locs[loc] += 1
+        self.turns[self.current_turn].attack_locs[loc] += 1
 
     def record_move(self, loc):
-        self.game_turns[self.current_turn].move_locs[loc] += 1
+        self.turns[self.current_turn].move_locs[loc] += 1
 
     def record_explode(self, loc):
-        for loc in rg.locs_around(loc) + [loc]:
-            self.game_turns[self.current_turn].explode_locs[loc] += 1
+        self.turns[self.current_turn].explode_locs[loc] += 1
 
     def record_guard(self, loc):
-        self.game_turns[self.current_turn].guard_locs[loc] += 1
+        self.turns[self.current_turn].guard_locs[loc] += 1
 
     # not an absolute check, only is accurate for robots already processed
     def will_have_player(self, loc):
-        return loc in self.game_turns[self.current_turn].move_locs
+        return loc in self.turns[self.current_turn].move_locs
 
 
 class Robot:
@@ -193,6 +289,7 @@ class Robot:
     def is_empty_loc(self, game, loc):
         return (loc not in game.robots
                 and 'obstacle' not in rg.loc_types(loc)
+                and 'invalid' not in rg.loc_types(loc)
                 and not self.intel.will_have_player(loc))
 
     def confident_dmg(self):
@@ -225,6 +322,10 @@ class Robot:
             locs += [(x, y-1)]
         if dest[1] > y:
             locs += [(x, y+1)]
+
+        # filter invalid ones
+        locs = [l for l in locs if ('invalid' not in rg.loc_types(l) and
+                                    'obstacle' not in rg.loc_types(l))]
 
         # short hack to control which dir to try first
         if abs(dest[0] - x) < abs(dest[1] - y):
