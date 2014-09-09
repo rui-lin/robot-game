@@ -394,11 +394,13 @@ class Robot:
 
         # 1 block away targets (in combat)
         if len(targets) > 0:
-            # try parry if may die
-            if self.hp <= len(targets)*10:
-                res = self.try_parry(game)
-                if res:
-                    return res
+            # try parry if may die or getting double-team'd and can't kill
+            # opponent
+            if ((len(targets) == 1 and self.hp <= 10 and targets[0].hp > 9) or
+                (len(targets) > 1 and any(x for x in targets if x.hp > 15))):
+                    res = self.try_parry(game)
+                    if res:
+                        return res
 
             # explode or attack decision
             if self.should_explode_over_attack():
