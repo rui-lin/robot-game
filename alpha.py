@@ -290,7 +290,7 @@ class Robot:
         return (loc not in game.robots
                 and 'obstacle' not in rg.loc_types(loc)
                 and 'invalid' not in rg.loc_types(loc)
-                and ('spawn' not in rg.loc_types(loc) or game.turn % 10 != 1)
+                and ('spawn' not in rg.loc_types(loc) or game.turn % 10 != 0)
                 and not self.intel.will_have_player(loc))
 
     def confident_dmg(self):
@@ -370,23 +370,67 @@ class Robot:
 
         self.set_state(self.ATTACK)  # crucial, was why kept trying to walk
 
-    def try_parry(self, game):
+    def try_parry(self, game, spawn_points_ok=False):
         safe_locs = [x for x in rg.locs_around(self.location) if
                      (self.is_empty_loc(game, x) and
-                      self.is_safe_from_attacks(game, x))]
+                      self.is_safe_from_attacks(game, x) and
+                      (spawn_points_ok or 'spawn' not in rg.loc_types(x)))]
         if len(safe_locs) > 0:
             return ['move', random.choice(safe_locs)]
         else:
             return False
 
+    # next turn spawn resets
+    def is_spawn_reset(self, game):
+        return game.turn % 10 == 0
+
+    def turns_after_last_spawn(self, game):
+        return (game.turn-1) % 10
+
+    # todo. some improvement here.. is it better to try to find way around
+    # or just run into enemy fire?
+    def escape_spawn_trap_move(self, game):
+        if 'spawn' in rg.loc_types(self.location):
+            locs = [x for x in rg.locs_around(self.location) if
+                    self.is_empty_loc(game, x)]
+            free_locs = [x for x in locs if 'spawn' not in rg.loc_types(x)]
+            safe_locs = [x for x in locs if self.is_safe_from_attacks(game, x)]
+            safe_and_free_locs = [x for x in free_locs if x in safe_locs]
+
+            # Try moving away first, even if may get hit.
+            if len(safe_and_free_locs) > 0:
+                return ['move', random.choice(safe_and_free_locs)]
+            elif len(safe_locs) > 0:
+                return ['move', random.choice(safe_locs)]
+            elif len(free_locs) > 0:
+                return ['move', random.choice(free_locs)]
+            elif len(locs) > 0:
+                return ['move', random.choice(locs)]
+            # No where to move.
+            else:
+                # Todo: for friendlies, can tell them to gtfo out lol.
+                # Todo: find a route, instead of just moving back n forth lol
+
+                # Gonna die anyways, explode and cause some damage!
+                # Enemies likely to guard. Some may move but hard to tell.
+                if self.is_spawn_reset(game):
+                    return ['suicide']
+                # Else, go to some other behaviour
+                return False
+
     def process_attack_state(self, game):
-        # Parry from predicted explosion
+        # Try parry from predicted explosion
         dangers = {x.location: x for x in self.neighbours_exploding()}
         if len(dangers) > 0:
-            res = self.try_parry(game)
+            res = self.try_parry(game, spawn_points_ok=True)
             return res if res else ['guard']
 
-        # Else, combat-mode
+        # Try escape from spawn reset
+        res = self.escape_spawn_trap_move(game)
+        if res:
+            return res
+
+        # Combat-mode
         targets = self.intel.enemies()
         targets = [x for x in targets if
                    rg.wdist(self.location, x.location) == 1]
@@ -398,7 +442,7 @@ class Robot:
             # opponent
             if ((len(targets) == 1 and self.hp <= 10 and targets[0].hp > 9) or
                 (len(targets) > 1 and any(x for x in targets if x.hp > 15))):
-                    res = self.try_parry(game)
+                    res = self.try_parry(game, spawn_points_ok=False)
                     if res:
                         return res
 
