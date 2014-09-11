@@ -15,7 +15,8 @@ Major Improvements
 - Enhance attack/defend behaviour (add extra prediction - towards robot) [~1800 elo, 09/05/2014]
 - Add intelligence gathering unit (ability to reconstruct enemy moves, make predictions, evaluate and adjust)
   Currently features predicting enemy explosions, and avoiding self-collisions [~1900 elo, 09/08/2014]
-- Enhance combat behaviour with parrying at low hp [unknown, 09/08/2014]
+- Enhance combat behaviour with parrying at low hp [~2000 elo, 09/08/2014]
+- Add escape from spawn point routine [~2100 elo, 09/10/2014]
 
 -----------
 Built for the AI robotics competition at https://robotgame.net
